@@ -7,24 +7,54 @@ app.use(express.static('public'));
 app.get('/proxy', async (req, res) => {
   try {
     const targetUrl = req.query.url;
-    
+
     if (!targetUrl) {
       return res.status(400).send('URL parameter required');
     }
 
-    const response = await axios.get(targetUrl, {
+    // Validate URL
+    let parsed;
+    try {
+      parsed = new URL(targetUrl);
+    } catch (e) {
+      return res.status(400).send('Invalid URL');
+    }
+
+    const response = await axios.get(parsed.href, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-      }
+      },
+      responseType: 'text'
     });
 
     let html = response.data;
-    html = html.replace(/href=["']\/(?!\/)/g, `href="/proxy?url=${targetUrl.replace(/\/$/, '')}/`);
-    html = html.replace(/src=["']\/(?!\/)/g, `src="/proxy?url=${targetUrl.replace(/\/$/, '')}/`);
+    const base = parsed.href.replace(/\/$/, '');
+
+    // Rewrite root-relative href/src to proxy full URLs. Preserve other attributes.
+    html = html.replace(/(href|src)=["']\/(?!\/)([^"'<>\s]*)["']/g, (m, attr, p) => {
+      // encode the full target so the proxy receives a valid absolute URL
+      return `${attr}="/proxy?url=${encodeURIComponent(base + '/' + p)}"`;
+    });
+
+    // Also handle srcset (basic handling for comma-separated list of urls)
+    html = html.replace(/srcset=["']([^"']+)["']/g, (m, grp) => {
+      const parts = grp.split(',').map(part => {
+        const trimmed = part.trim();
+        // if it starts with / (root-relative) rewrite, otherwise leave as-is
+        if (trimmed.startsWith('/')) {
+          const [urlPart, descriptor] = trimmed.split(/\s+/, 2);
+          const newUrl = `/proxy?url=${encodeURIComponent(base + urlPart)}`;
+          return descriptor ? `${newUrl} ${descriptor}` : newUrl;
+        }
+        return trimmed;
+      });
+      return `srcset="${parts.join(', ')}"`;
+    });
 
     res.send(html);
   } catch (error) {
-    res.status(500).send('Error fetching content: ' + error.message);
+    console.error('Proxy error:', error && error.message);
+    res.status(500).send('Error fetching content: ' + (error && error.message));
   }
 });
 
@@ -55,10 +85,10 @@ app.get('/', (req, res) => {
   <div id="proxyContainer"></div>
   <script>
     const container = document.getElementById("proxyContainer");
-    
+
     async function loadProxiedContent() {
       try {
-        const response = await fetch('/proxy?url=https://www.roblox.com');
+        const response = await fetch('/proxy?url=' + encodeURIComponent('https://www.roblox.com'));
         const html = await response.text();
         container.innerHTML = html;
       } catch (error) {
@@ -66,7 +96,7 @@ app.get('/', (req, res) => {
         container.innerHTML = '<p>Error loading content</p>';
       }
     }
-    
+
     document.addEventListener("keydown", (e) => {
       if (e.key === "F11") {
         e.preventDefault();
@@ -77,7 +107,7 @@ app.get('/', (req, res) => {
         }
       }
     });
-    
+
     loadProxiedContent();
   </script>
 </body>
